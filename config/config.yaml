@@ -1,0 +1,74 @@
+universe:
+  start:          "2005-01-01"
+  end:            "2024-12-31"
+  iwb_url:        "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/1467271812596.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund"
+  seed_file:      "data/external/iwb_seed_tickers.parquet"
+  ff5m_file:      "data/external/ff5m_daily.parquet"
+  min_market_cap_usd: 1000000000
+  min_history_days:   252
+  universe_size:      1000
+
+prices:
+  batch_size:     100
+  batch_delay:    1.0
+  winsor_threshold: 0.693147
+  min_stocks_per_date: 100
+  prices_output:  "data/processed/prices.parquet"
+  returns_output: "data/processed/returns.parquet"
+  market_cap_output: "data/processed/market_cap.parquet"
+
+residuals:
+  window:         252     # rolling OLS window in trading days
+  min_obs:        200     # minimum valid observations per window
+  output:         "data/processed/residuals/residuals.parquet"
+
+covariance:
+  window:         252     # trailing days used to estimate covariance
+  min_stocks:     50      # minimum stocks required per date
+  max_stocks:     201     # cap = int(0.8 * window), ensures T > N
+  start:          "2007-01-01"
+  end:            "2024-12-31"
+  output_dir:     "data/processed/covariance"
+
+clustering:
+  k_target:       10      # number of clusters (maxclust criterion)
+  linkage_method: "ward"  # ward linkage minimises within-cluster variance
+  output_dir:     "data/processed/clusters"
+
+signal:
+  lookback:       126     # formation period in trading days (6 months)
+  skip:           21      # skip most recent days to avoid reversal zone
+  ic:             0.05    # information coefficient (Blitz et al. 2017)
+  start:          "2007-01-01"
+  end:            "2024-12-31"
+  output:         "data/processed/signals/signals.parquet"
+
+portfolio:
+  gamma:          1.0     # risk aversion coefficient
+  tc_lambda:      0.0010  # transaction cost per unit of turnover (10 bps)
+  max_weight:     0.05    # maximum long position size
+  min_weight:    -0.05    # maximum short position size
+  output:         "data/processed/portfolio/weights.parquet"
+
+ml:
+  labels:
+    t_max:         21
+    h:             1.0
+  fracdiff:
+    d_fixed:       0.4
+    thresh:        1.0e-5
+  model:
+    n_splits:      5
+    embargo:       21
+    n_estimators:  500
+    max_features:  "sqrt"
+    min_samples_leaf: 5
+    random_state:  42
+  tuning:
+    n_estimators:  [300, 500]
+    max_features:  ["sqrt", "log2"]
+    min_samples_leaf: [2, 5]
+
+backtest:
+  start:           "2018-01-01"
+  end:             "2024-12-31"
