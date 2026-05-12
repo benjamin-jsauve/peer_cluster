@@ -1,0 +1,10 @@
+\beamer@sectionintoc {1}{Motivation}{2}{0}{1}
+\beamer@sectionintoc {2}{Architecture}{3}{0}{2}
+\beamer@sectionintoc {3}{Residualisation}{4}{0}{3}
+\beamer@sectionintoc {4}{Covariance Cleaning}{6}{0}{4}
+\beamer@sectionintoc {5}{Clustering}{8}{0}{5}
+\beamer@sectionintoc {6}{Signal}{10}{0}{6}
+\beamer@sectionintoc {7}{Portfolio}{12}{0}{7}
+\beamer@sectionintoc {8}{Results}{13}{0}{8}
+\beamer@sectionintoc {9}{ML Extension}{15}{0}{9}
+\beamer@sectionintoc {10}{Discussion}{17}{0}{10}

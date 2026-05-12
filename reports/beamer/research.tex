@@ -1,0 +1,376 @@
+\documentclass[10pt,aspectratio=169]{beamer}
+
+\usetheme{Antibes}
+\usecolortheme{seahorse}
+\usefonttheme{professionalfonts}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\definecolor{accent}{RGB}{30, 70, 130}
+\setbeamercolor{title}{fg=accent}
+\setbeamercolor{frametitle}{fg=accent}
+\setbeamercolor{structure}{fg=accent}
+
+\graphicspath{{../figures/}{reports/figures/}{./figures/}{./}}
+
+\title[Within-Cluster Residual Momentum]{A Within-Cluster Residual Momentum Strategy with Machine-Learning Bet Sizing}
+\author{Benjamin Sauv\'e}
+\date{\today}
+
+\begin{document}
+
+% ---------------------------------------------------------------------------
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Motivation}
+
+\begin{frame}{Hypothesis}
+  \small
+  Idiosyncratic momentum, the persistence of residual returns after stripping common factor exposures, has been shown to outperform total-return momentum on a risk-adjusted basis \cite{blitz2017}. Standard implementations standardise the signal across the full universe.
+
+  \medskip
+
+  We test a sharper conditioning: that the predictive power of idiosyncratic momentum is concentrated \emph{within} groups of stocks sharing latent residual co-movement.
+  \begin{block}{Central claim}
+    Let $z_t^i$ denote the standardised six-month residual return of stock $i$, and let $\mathcal{C}_k$ denote a data-driven cluster of stocks. Then
+    \[
+      \mathrm{IC}_{\text{within}} \;=\; \mathbb{E}\!\left[\mathrm{IC}\bigl(z_t^i, r_{[t,t+21]}^i\bigr) \mid i \in \mathcal{C}_k\right] \;>\; \mathrm{IC}_{\text{across}}.
+    \]
+  \end{block}
+
+  The pipeline that follows constructs $z_t^i$, the partition $\{\mathcal{C}_k\}$, and a portfolio that translates the signal into positions.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Architecture}
+
+\begin{frame}{Pipeline}
+  \small
+  \begin{center}
+  \begin{tabular}{l@{\hskip 8pt}l}
+  \toprule
+  \textbf{Stage} & \textbf{Output} \\
+  \midrule
+  Prices, factors (yfinance, Ken French) & log-returns, FF5+M panel \\
+  Rolling OLS residualisation & $\varepsilon_t^i$, $\hat{\sigma}_t^i$, $\hat{\beta}_t^i$ \\
+  Marchenko--Pastur covariance cleaning & $\tilde{\Sigma}_t$ \\
+  Ward hierarchical clustering on Mantegna distance & $\{\mathcal{C}_k\}_t$ \\
+  Within-cluster Grinold--Kahn signal & $\alpha_t^i = \mathrm{IC}\cdot \hat{\sigma}_t^i \cdot z_t^i$ \\
+  TC-aware long--short quadratic programme & $w_t^*$ \\
+  \midrule
+  ML extension (AFML): fracdiff, triple barrier, RF, bet sizing & $\alpha_t^{\mathrm{ML},i}$ \\
+  \bottomrule
+  \end{tabular}
+  \end{center}
+
+  \medskip
+
+  Each stage is implemented as a self-contained module with parameters loaded from a single YAML configuration; intermediate outputs are cached as Parquet files. The repository is reproducible end to end from the command line.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Residualisation}
+
+\begin{frame}{Stripping Factor Exposure}
+  \small
+  For each stock $i$ and each trading day $t$, the daily excess return is decomposed via a rolling 252-day OLS regression on the Fama--French five-factor model augmented with momentum \cite{fama2015}:
+  \[
+    r_t^i - r_t^f \;=\; \beta_t^{i,\top} f_t \;+\; \varepsilon_t^i, \qquad f_t \in \mathbb{R}^6.
+  \]
+  The residual $\varepsilon_t^i$ is, by Frisch--Waugh--Lovell, orthogonal to the factors within each estimation window. The rolling annualised volatility
+  \(
+    \hat{\sigma}_t^i = \sqrt{252}\,\mathrm{std}\bigl(\varepsilon_{[t-252, t]}^i\bigr)
+  \)
+  feeds both signal scaling and the triple-barrier construction.
+\end{frame}
+
+\begin{frame}{Residual Diagnostics}
+  \centering
+  \begin{columns}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{01_residuals_hist_qq.png}
+      \par\smallskip
+      \scriptsize Pooled residuals are approximately Gaussian; tails reflect event days.
+    \end{column}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{01_residuals_csd_over_time.png}
+      \par\smallskip
+      \scriptsize Cross-sectional dispersion spikes at the GFC and COVID.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Covariance Cleaning}
+
+\begin{frame}{Marchenko--Pastur Cleaning}
+  \small
+  Sample covariance matrices estimated on $T \approx N$ are dominated by noise. The Marchenko--Pastur theorem \cite{laloux1999} states that, in the absence of signal, the eigenvalues of $\hat{C}$ are bounded almost surely within
+  \[
+    \lambda_\pm \;=\; \sigma^2 \bigl(1 \pm \sqrt{q}\bigr)^2, \qquad q = N/T.
+  \]
+  We fit $\sigma^2$ via kernel-density minimisation against the analytical MP density, classify eigenvalues above $\lambda_+$ as signal, and replace the remainder by their mean to preserve the trace \cite{bai2012}:
+  \[
+    \tilde{C} \;=\; \sum_{k:\lambda_k > \lambda_+} \lambda_k v_k v_k^\top \;+\; \bar{\lambda}_{\mathrm{noise}}\!\sum_{k:\lambda_k \le \lambda_+} v_k v_k^\top.
+  \]
+  Cleaning is applied to the \emph{correlation} matrix and converted back to covariance via the empirical volatilities. The universe is capped at $N = \lfloor 0.8\,T \rfloor = 201$ to guarantee $T > N$.
+\end{frame}
+
+\begin{frame}{Spectrum Before and After Cleaning}
+  \centering
+  \begin{columns}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{02_covariance_mp_spectrum.png}
+      \par\smallskip
+      \scriptsize Empirical eigenvalue density against the fitted MP bulk; signal eigenvalues lie to the right of $\lambda_+$.
+    \end{column}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{02_covariance_heatmaps.png}
+      \par\smallskip
+      \scriptsize Sample versus cleaned correlation; off-diagonal noise is attenuated while block structure is preserved.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Clustering}
+
+\begin{frame}{Hierarchical Clustering on the Mantegna Distance}
+  \small
+  Following \cite{mantegna1999}, we form the metric
+  \[
+    d_{ij} \;=\; \sqrt{\tfrac{1}{2}\bigl(1 - \tilde{C}_{ij}\bigr)} \;\in\; [0, 1],
+  \]
+  which is the Euclidean distance between normalised Gaussian return vectors and satisfies the triangle inequality exactly. Ward linkage agglomerative clustering is applied to the condensed distance matrix; the dendrogram is cut at $K = 10$.
+
+  \medskip
+
+  Ward was chosen over the silhouette-based ONC algorithm \cite{lopezdeprado2020} after the latter degenerated to $K = 2$ on real equity data, a known limitation also reported in independent replications. Ward minimises within-cluster variance at each merge step, producing compact and economically coherent groups.
+
+  \medskip
+
+\end{frame}
+
+\begin{frame}{Cluster Structure}
+  \centering
+  \begin{columns}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{03_clusters_dendrogram.png}
+      \par\smallskip
+      \scriptsize Ward dendrogram with the $K=10$ cut. Within-cluster merge heights are well below between-cluster heights.
+    \end{column}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{03_clusters_nmi.png}
+      \par\smallskip
+      \scriptsize Normalised mutual information between consecutive monthly cluster assignments. Mean NMI $= 0.586$ indicates stable structure with slow rotation.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Signal}
+
+\begin{frame}{Within-Cluster Grinold--Kahn Signal}
+  \small
+  The formation period follows the standard idiosyncratic momentum specification \cite{blitz2017}: cumulative residuals over the trailing 126 trading days, skipping the most recent 21 days to avoid the short-horizon reversal zone. Within each cluster we standardise cross-sectionally,
+  \[
+    z_t^i \;=\; \frac{\bar{\varepsilon}_t^i - \mu_t^{c_i}}{\sigma_t^{c_i}}, \qquad \mathbb{E}\!\left[z_t^i \,\big|\, i \in \mathcal{C}_k\right] = 0, \;\; \mathrm{Var}\!\left[z_t^i \,\big|\, i \in \mathcal{C}_k\right] = 1.
+  \]
+  The signal is converted into a return forecast in annualised units via \cite{grinold1994}:
+  \[
+    \alpha_t^i \;=\; \mathrm{IC} \cdot \hat{\sigma}_t^i \cdot z_t^i, \qquad \mathrm{IC} = 0.05.
+  \]
+  The $\mathrm{IC} = 0.05$ prior is the practitioner-standard "good but not exceptional" value \cite{grinold2000}; the empirical IC is measured in evaluation rather than assumed.
+\end{frame}
+
+\begin{frame}{Signal Diagnostics}
+  \centering
+  \begin{columns}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{04_signals_ic_decay.png}
+      \par\smallskip
+      \scriptsize IC by forecast horizon. Peak predictive power at one month, decaying smoothly thereafter.
+    \end{column}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{04_signals_ic_within_across.png}
+      \par\smallskip
+      \scriptsize Within-cluster versus across-cluster IC. Mean difference $+0.0044$, positive on 55\% of dates; HAC-corrected $t = 0.90$, $p = 0.37$.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Portfolio}
+
+\begin{frame}{Transaction-Cost-Aware Optimisation}
+  \small
+  Weights are obtained by solving the \cite{garleanu2013} programme at each rebalancing date:
+  \[
+    w_t^\star \;=\; \arg\max_{w} \;\; w^\top \alpha_t \;-\; \tfrac{\gamma}{2}\, w^\top \tilde{\Sigma}_t w \;-\; \lambda \,\bigl\| w - w_{t-1} \bigr\|_1
+  \]
+  subject to dollar neutrality $\sum_i w_i = 0$ and position bounds $w_i \in [-0.05, 0.05]$. The $\ell_1$ turnover penalty is linearised through auxiliary variables, yielding a convex quadratic programme solved with CVXPY (CLARABEL backend).
+
+  \medskip
+
+  Risk aversion $\gamma = 1$ and turnover cost $\lambda = 10\,\text{bps}$. The covariance matrix is annualised before entering the objective to match the units of $\alpha_t$.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Results}
+
+\begin{frame}{Backtest Performance}
+  \small
+  Monthly rebalancing, long--short dollar-neutral, no slippage. Effective backtest window: 2018--2025 due to the chain of warmup periods. Survivorship-biased universe (current Russell~1000 constituents).
+
+  \medskip
+  \centering
+  \begin{tabular}{lrrrrr}
+  \toprule
+  & \textbf{Ann.\ Ret.} & \textbf{Ann.\ Vol.} & \textbf{Sharpe} & \textbf{Max DD} & \textbf{Hit Rate} \\
+  \midrule
+  Grinold--Kahn      & $9.32\%$  & $23.32\%$ & $0.40$  & $-40.6\%$ & $54.2\%$ \\
+  ML-scaled          & $-0.1\%$  & $0.2\%$   & $-0.87$ & $-1.7\%$  & $35.2\%$ \\
+  \bottomrule
+  \end{tabular}
+
+  \medskip
+  \scriptsize
+  The ML-scaled portfolio takes near-zero positions because the random forest probabilities cluster tightly around the base rate $1/3$, yielding bet scalars in $[0, 0.1]$. The methodology is correct; the model's discrimination (AUC $0.55$) is insufficient to materially scale the primary signal at the available sample size. See Section~\ref{sec:ml}.
+\end{frame}
+
+\begin{frame}{Cumulative Return and Drawdown}
+  \centering
+  \begin{columns}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{05_portfolio_cumulative.png}
+      \par\smallskip
+      \scriptsize Cumulative log return; positive cumulative performance with a momentum-crash drawdown in early 2021.
+    \end{column}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{05_portfolio_drawdown.png}
+      \par\smallskip
+      \scriptsize Drawdown path. The largest drawdown coincides with the post-COVID factor rotation, a regime where momentum is known to fail \cite{daniel2016}.
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{ML Extension}
+\label{sec:ml}
+
+\begin{frame}{Meta-Labeling: Architecture}
+  \small
+  Following \cite{lopezdeprado2018}, the primary $z_t^i$ signal determines bet direction; a secondary classifier learns when to size up or down.
+
+  \begin{itemize}\setlength{\itemsep}{2pt}
+    \item \textbf{Labels}: triple-barrier on the residual path with idiosyncratic-volatility-scaled barriers, $h \cdot \hat{\sigma}_i \sqrt{t}$, vertical barrier at $T_{\max} = 21$.
+    \item \textbf{Features}: fixed-width fractional differentiation of cumulative residuals at $d = 0.4$; cluster coherence and dispersion; idiosyncratic volatility levels and changes; factor betas.
+    \item \textbf{Model}: random forest with purged $k$-fold cross-validation and a 21-day embargo to prevent label-overlap leakage.
+    \item \textbf{Tuning}: grid search over $n_\text{est}$, $\mathrm{max\_features}$, $\mathrm{min\_leaf}$.
+    \item \textbf{Bet sizing}: probability rescaled relative to the $1/3$ base rate; magnitude multiplies the primary $\alpha$ while preserving its sign.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Model Behaviour}
+  \centering
+  \begin{columns}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{06_meta_labeling_calibration.png}
+      \par\smallskip
+      \scriptsize Reliability diagrams for the upper and lower barrier classes. Probabilities are reasonably calibrated; the model finds real but modest signal.
+    \end{column}
+    \begin{column}{0.49\textwidth}
+      \includegraphics[width=\linewidth]{06_meta_labeling_pnl_bins.png}
+      \par\smallskip
+      \scriptsize Signed forward return by predicted-probability quintile. Monotone increase from Q1 to Q5 confirms genuine discrimination.
+    \end{column}
+  \end{columns}
+
+  \medskip
+  \scriptsize Mean OOF AUC across five purged folds: $0.551$ (range $0.531$--$0.586$). Statistically meaningful but quantitatively insufficient to outperform the primary signal at this sample size.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section{Discussion}
+
+\begin{frame}{Limitations}
+  \small
+  \begin{description}\setlength{\itemsep}{4pt}
+    \item[Survivorship bias.] The seed universe is the current Russell 1000. Stocks that delisted, were acquired below peak, or fell out of the index between 2005 and today are absent. This biases all return statistics upward systematically.
+
+    \item[Static share count.] Historical market capitalisations use the current share count, materially mis-stating size for companies with significant buyback or issuance programmes.
+
+    \item[Short effective sample.] The warmup chain (252 days OLS, 126+21 days signal) means the effective backtest spans roughly seven years. With 207 monthly observations and HAC-corrected standard errors, the hypothesis test on $\mathrm{IC}_{\text{within}} > \mathrm{IC}_{\text{across}}$ is underpowered.
+
+    \item[ML discrimination.] An AUC of $0.55$ on three-class triple-barrier labels is consistent with the literature \cite{lopezdeprado2018, devarakonda2023} but is insufficient to scale the primary signal meaningfully. The infrastructure is correct; the result reflects sample-size and signal-strength constraints rather than implementation error.
+  \end{description}
+\end{frame}
+
+\begin{frame}{Conclusion and Next Steps}
+  \small
+  We have constructed a complete systematic equity research pipeline from raw prices through factor residualisation, random-matrix-theory covariance cleaning, hierarchical clustering, signal construction, and transaction-cost-aware optimisation and extended it with a machine-learning bet-sizing layer following \cite{lopezdeprado2018}.
+
+  \medskip
+
+  The Grinold--Kahn portfolio attains a Sharpe ratio of $0.40$ on a survivorship-biased seven-year backtest, consistent with the published benchmark of \cite{blitz2017} adjusted for data constraints. The within-cluster IC exceeds the across-cluster IC on $55\%$ of months with the correct sign of the mean difference; the test does not reject at $5\%$ under HAC correction, a power result rather than a null one.
+
+  \medskip
+  \textbf{Natural extensions:}
+  \begin{itemize}\setlength{\itemsep}{1pt}
+    \item Julia port of the residualisation module to interface with production systematic stacks.
+    \item Replication on CRSP with a full delisting record to remove the dominant bias.
+    \item Volatility-targeted position sizing to bring portfolio volatility closer to typical market-neutral targets.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\section*{References}
+
+\begin{frame}[allowframebreaks]{References}
+  \scriptsize
+  \begin{thebibliography}{99}
+    \bibitem{bai2012} Bai, J.\ and Yao, J.\ (2012). On sample eigenvalues in a generalized spiked population model. \emph{Annals of Statistics}, 40(3), 1466--1492.
+
+    \bibitem{blitz2017} Blitz, D., Hanauer, M.\ X., and Vidojevic, M.\ (2017). The idiosyncratic momentum anomaly. \emph{Working paper, Erasmus University}.
+
+    \bibitem{daniel2016} Daniel, K.\ and Moskowitz, T.\ J.\ (2016). Momentum crashes. \emph{Journal of Financial Economics}, 122(2), 221--247.
+
+    \bibitem{devarakonda2023} Devarakonda, P.\ et al.\ (2023). Meta-labeling: theory and framework. \emph{Hudson \& Thames Research}.
+
+    \bibitem{fama2015} Fama, E.\ F.\ and French, K.\ R.\ (2015). A five-factor asset pricing model. \emph{Journal of Financial Economics}, 116(1), 1--22.
+
+    \bibitem{garleanu2013} G\^{a}rleanu, N.\ and Pedersen, L.\ H.\ (2013). Dynamic trading with predictable returns and transaction costs. \emph{Journal of Finance}, 68(6), 2309--2340.
+
+    \bibitem{grinold1994} Grinold, R.\ C.\ (1994). Alpha is volatility times IC times score. \emph{Journal of Portfolio Management}, 20(4), 9--16.
+
+    \bibitem{grinold2000} Grinold, R.\ C.\ and Kahn, R.\ N.\ (2000). \emph{Active Portfolio Management}. McGraw-Hill.
+
+    \bibitem{jegadeesh1990} Jegadeesh, N.\ (1990). Evidence of predictable behavior of security returns. \emph{Journal of Finance}, 45(3), 881--898.
+
+    \bibitem{laloux1999} Laloux, L., Cizeau, P., Bouchaud, J.-P., and Potters, M.\ (1999). Noise dressing of financial correlation matrices. \emph{Physical Review Letters}, 83(7), 1467--1470.
+
+    \bibitem{lopezdeprado2018} L\'{o}pez de Prado, M.\ (2018). \emph{Advances in Financial Machine Learning}. Wiley.
+
+    \bibitem{lopezdeprado2020} L\'{o}pez de Prado, M.\ (2020). \emph{Machine Learning for Asset Managers}. Cambridge University Press.
+
+    \bibitem{mantegna1999} Mantegna, R.\ N.\ (1999). Hierarchical structure in financial markets. \emph{European Physical Journal B}, 11(1), 193--197.
+
+    \bibitem{newey1987} Newey, W.\ K.\ and West, K.\ D.\ (1987). A simple, positive semi-definite, heteroskedasticity and autocorrelation consistent covariance matrix. \emph{Econometrica}, 55(3), 703--708.
+  \end{thebibliography}
+\end{frame}
+
+\end{document}

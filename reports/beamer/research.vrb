@@ -1,0 +1,34 @@
+\frametitle{Repository Structure}
+
+\scriptsize
+
+\begin{lstlisting}
+toy_strategy/
+├── config/
+├── data/
+│   ├── external/
+│   └── processed/
+├── models/
+├── notebooks/
+├── references/
+├── reports/figures/
+├── src/
+│   ├── data/
+│   ├── signals/
+│   ├── models/
+│   ├── portfolio/
+│   ├── ml/
+│   ├── utils/
+│   └── backtest.py
+├── pipeline.py
+└── README.md
+\end{lstlisting}
+
+\normalsize
+
+Design principle:
+
+\vspace{0.5em}
+
+All modules are pure transformations. Pipeline state is materialized as immutable parquet outputs.
+
