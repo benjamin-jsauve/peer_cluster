@@ -1,4 +1,4 @@
-# Toy Strategy
+# Peer Cluster Redisual Momentum
 
 End-to-end toy factor strategy pipeline with optional ML meta-labeling. Cached outputs live in `data/processed/` so you do not have to recompute every run.
 
